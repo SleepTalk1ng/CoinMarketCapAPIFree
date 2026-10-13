@@ -1,0 +1,18 @@
+services:
+  tracker:
+    build: .
+    init: true
+    env_file:
+      - .env
+    environment:
+      PORT: "3000"
+      DATABASE_PATH: /app/data/app.sqlite
+    ports:
+      - "127.0.0.1:${PORT:-3000}:3000"
+    volumes:
+      - tracker-data:/app/data
+    stop_signal: SIGTERM
+    stop_grace_period: 30s
+
+volumes:
+  tracker-data:

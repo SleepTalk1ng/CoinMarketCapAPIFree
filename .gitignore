@@ -1,0 +1,28 @@
+# Local secrets
+.env
+.env.*
+!.env.example
+
+# Local SQLite files
+/data/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.sqlite3
+*.sqlite3-*
+
+# Dependencies and generated output
+node_modules/
+dist/
+.test-build/
+coverage/
+*.tsbuildinfo
+npm-debug.log*
+
+# Local verification runtimes and temporary files
+.verification/
+
+# Development notes
+/PROJECT_PLAN.md
+/CMC_API_RESEARCH.md

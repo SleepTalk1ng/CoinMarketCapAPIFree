@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <title>Наблюдение за ценой</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 24px auto; padding: 0 18px; max-width: 1000px; font: 15px/1.5 system-ui, sans-serif; color: #17212f; background: #f7f8fa; }
+    h1 { font-size: 24px; margin-bottom: 6px; } h2 { font-size: 18px; }
+    .muted { color: #5e6978; } .small { font-size: 13px; }
+    section { background: white; border: 1px solid #dce1e7; border-radius: 8px; padding: 18px; margin: 16px 0; }
+    form { display: flex; flex-wrap: wrap; gap: 12px; align-items: end; }
+    label { display: flex; flex-direction: column; gap: 4px; } .key { flex: 1; min-width: 220px; }
+    input, select, button { font: inherit; border: 1px solid #b8c2cd; border-radius: 5px; padding: 8px 10px; }
+    input { width: 100%; } #cmc-id { width: 110px; }
+    button { background: #eef2f7; cursor: pointer; } button.primary { background: #2563eb; color: white; border-color: #2563eb; }
+    button:disabled { opacity: .5; cursor: default; } :focus-visible { outline: 2px solid #2563eb; outline-offset: 2px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; align-items: center; }
+    #status { min-height: 24px; } #status[data-error="true"] { color: #b42318; }
+    .stats { display: flex; flex-wrap: wrap; gap: 24px; } .stats div { min-width: 170px; }
+    .stats dt { color: #5e6978; font-size: 13px; } .stats dd { margin: 4px 0; } #price { font-size: 24px; font-weight: 600; }
+    canvas { display: block; width: 100%; height: 300px; }
+    .table-wrap { overflow-x: auto; } table { border-collapse: collapse; width: 100%; font-size: 13px; white-space: nowrap; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #edf0f3; } th { color: #5e6978; }
+    @media (max-width: 550px) { body { margin-top: 12px; } section { padding: 12px; } canvas { height: 250px; } }
+  </style>
+  <script src="./app.js" defer></script>
+</head>
+<body>
+  <h1>Наблюдение за ценой</h1>
+  <p class="muted">Выберите уже отслеживаемую монету по CoinMarketCap ID (UCID).</p>
+  <section>
+    <form id="watch-form">
+      <label class="key">Ключ сервиса — SERVICE_API_KEY
+        <input id="service-key" type="password" required autocomplete="off" spellcheck="false" placeholder="Введите ключ вашего API">
+      </label>
+      <label>UCID
+        <input id="cmc-id" type="text" inputmode="numeric" pattern="[1-9][0-9]*" required value="1027" title="Положительный числовой CoinMarketCap ID">
+      </label>
+      <label>Читать БД каждые
+        <select id="interval"><option value="2">2 секунды</option><option value="5" selected>5 секунд</option><option value="10">10 секунд</option><option value="30">30 секунд</option></select>
+      </label>
+      <button class="primary" type="submit">Следить</button>
+      <button id="stop" type="button" disabled>Остановить</button>
+    </form>
+    <div class="actions">
+      <button id="refresh" type="button" disabled>Получить новую цену из CMC</button>
+      <span class="muted small">Этот запрос расходует квоту CoinMarketCap.</span>
+    </div>
+    <p id="status" role="status" aria-live="polite">Введите ключ сервиса и нажмите «Следить». Ключ хранится только на этой открытой странице.</p>
+    <p class="muted small">График автоматически читает сохранённые данные. Backend обновляет активные монеты по своему таймеру; кнопка позволяет получить цену вручную. Ключ CoinMarketCap сюда вводить не нужно.</p>
+  </section>
+  <section aria-label="Текущая сохранённая цена">
+    <h2 id="coin-name">Монета не выбрана</h2>
+    <dl class="stats">
+      <div><dt>Последняя цена · USD</dt><dd id="price">—</dd></div>
+      <div><dt>Получена сервером</dt><dd id="received">—</dd></div>
+      <div><dt>Обновлена у источника</dt><dd id="source">—</dd></div>
+    </dl>
+    <p id="checked" class="muted small">—</p>
+  </section>
+  <section>
+    <h2>История цены · USD</h2>
+    <canvas id="chart" role="img" aria-label="График сохранённой истории цены"></canvas>
+    <p id="history-count" class="muted small">Последние 100 снимков. Время показано в часовом поясе браузера.</p>
+    <div class="table-wrap">
+      <table><thead><tr><th>Получение сервером</th><th>Цена · USD</th><th>Время источника</th></tr></thead><tbody id="history-rows"></tbody></table>
+    </div>
+  </section>
+</body>
+</html>

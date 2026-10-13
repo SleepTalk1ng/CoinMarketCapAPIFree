@@ -1,0 +1,1280 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "Crypto Price Tracker API",
+    "version": "0.1.0",
+    "description": "REST API for tracking cryptocurrencies by numeric CoinMarketCap ID (UCID). USD quotes and accumulated receipt history are stored in file-backed SQLite. Creation and snapshot updates are atomic. Active coins are refreshed at startup and by a sequential background timer; manual refresh also calls CoinMarketCap, while GET requests read only SQLite. All business operations require the separate SERVICE_API_KEY. SIGINT/SIGTERM stop HTTP, background work and provider requests before closing SQLite. CoinMarketCap Basic uses REST polling; its WebSocket API requires Startup or higher."
+  },
+  "servers": [
+    {
+      "url": "/"
+    }
+  ],
+  "security": [
+    {
+      "serviceBearer": []
+    }
+  ],
+  "paths": {
+    "/api/v1/cryptocurrencies": {
+      "post": {
+        "operationId": "createCryptocurrency",
+        "summary": "Track a cryptocurrency by UCID (CoinMarketCap ID)",
+        "description": "Fetches the name, symbol and first USD quote from CoinMarketCap, then saves the coin and snapshot in one transaction. Only the numeric cmcId (UCID) is accepted; trackingEnabled defaults to true. Location uses cmcId. A missing quote returns 404; this does not prove that the ID never existed. Existing UCIDs return 409 without calling the provider. No query parameters. During the shared quota pause, returns 503 without a provider request; no coin or snapshot is created.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateCryptocurrency"
+              },
+              "example": {
+                "cmcId": 1027
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Coin and first snapshot created",
+            "headers": {
+              "Location": {
+                "description": "Path to the created coin, using its cmcId (UCID)",
+                "schema": {
+                  "type": "string",
+                  "example": "/api/v1/cryptocurrencies/1027"
+                }
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cryptocurrency"
+                },
+                "example": {
+                  "id": 1,
+                  "cmcId": 1027,
+                  "symbol": "ETH",
+                  "name": "Ethereum",
+                  "trackingEnabled": true,
+                  "createdAt": "2026-10-07T10:00:00.000Z",
+                  "updatedAt": "2026-10-07T10:00:00.000Z",
+                  "lastPriceReceivedAt": "2026-10-07T10:00:00.000Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "CoinMarketCap did not return the requested coin (CMC_COIN_NOT_FOUND)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "CMC_COIN_NOT_FOUND",
+                    "message": "CoinMarketCap did not return the requested cryptocurrency."
+                  }
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "This cmcId is already tracked (CRYPTOCURRENCY_ALREADY_EXISTS)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "CRYPTOCURRENCY_ALREADY_EXISTS",
+                    "message": "This CoinMarketCap ID is already tracked."
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "502": {
+            "description": "Provider failure, invalid response, credentials or quote; no data saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "CMC_NETWORK_ERROR",
+                    "message": "CoinMarketCap could not be reached."
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "CoinMarketCap quota/rate limit or shared cooldown (CMC_RATE_LIMITED); no data saved. During shutdown, an already open connection can instead return SERVER_STOPPING with Connection: close.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "quota": {
+                    "value": {
+                      "error": {
+                        "code": "CMC_RATE_LIMITED",
+                        "message": "CoinMarketCap request quota or rate limit was reached."
+                      }
+                    }
+                  },
+                  "stopping": {
+                    "value": {
+                      "error": {
+                        "code": "SERVER_STOPPING",
+                        "message": "Server is stopping."
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Connection": {
+                "description": "Present only for SERVER_STOPPING.",
+                "schema": {
+                  "type": "string",
+                  "example": "close"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "CoinMarketCap timed out (CMC_TIMEOUT); no data saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "CMC_TIMEOUT",
+                    "message": "CoinMarketCap request timed out."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Cryptocurrencies"
+        ]
+      },
+      "get": {
+        "operationId": "listCryptocurrencies",
+        "summary": "List tracked coins from SQLite",
+        "description": "Sorted by internal ID ascending. Reads only SQLite; does not call CoinMarketCap. Only limit and offset query parameters are accepted, once each, as decimal integers.",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Offset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Page of tracked coins, including paused coins",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CryptocurrencyPage"
+                },
+                "example": {
+                  "items": [
+                    {
+                      "id": 1,
+                      "cmcId": 1027,
+                      "symbol": "ETH",
+                      "name": "Ethereum",
+                      "trackingEnabled": true,
+                      "createdAt": "2026-10-07T10:00:00.000Z",
+                      "updatedAt": "2026-10-07T10:00:00.000Z",
+                      "lastPriceReceivedAt": "2026-10-07T10:00:00.000Z"
+                    }
+                  ],
+                  "pagination": {
+                    "limit": 50,
+                    "offset": 0,
+                    "total": 1
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        },
+        "tags": [
+          "Cryptocurrencies"
+        ]
+      }
+    },
+    "/api/v1/cryptocurrencies/{cmcId}": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/CmcId"
+        }
+      ],
+      "get": {
+        "operationId": "getCryptocurrency",
+        "summary": "Read a tracked coin by UCID",
+        "description": "cmcId is the numeric CoinMarketCap ID (UCID), e.g. 1 for Bitcoin or 1027 for Ethereum. Reads a tracked coin directly from SQLite by cmc_id. An untracked UCID returns 404; no provider request is made. Query parameters are not supported.",
+        "responses": {
+          "200": {
+            "description": "Tracked coin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cryptocurrency"
+                },
+                "example": {
+                  "id": 1,
+                  "cmcId": 1027,
+                  "symbol": "ETH",
+                  "name": "Ethereum",
+                  "trackingEnabled": true,
+                  "createdAt": "2026-10-07T10:00:00.000Z",
+                  "updatedAt": "2026-10-07T10:00:00.000Z",
+                  "lastPriceReceivedAt": "2026-10-07T10:00:00.000Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/CoinNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        },
+        "tags": [
+          "Cryptocurrencies"
+        ]
+      },
+      "patch": {
+        "operationId": "patchCryptocurrency",
+        "summary": "Pause or resume tracking by UCID",
+        "description": "The path uses cmcId (UCID); only the boolean trackingEnabled is accepted in the body. Preserves coin identity and history; updates updatedAt without decreasing it, leaving lastPriceReceivedAt intact. false excludes the coin from background updates, including a quote still in flight when the pause is applied; true includes it in subsequent passes. Paused coins still permit manual refresh and reads. Query parameters are not supported.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PatchCryptocurrency"
+              },
+              "example": {
+                "trackingEnabled": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Updated coin",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Cryptocurrency"
+                },
+                "example": {
+                  "id": 1,
+                  "cmcId": 1027,
+                  "symbol": "ETH",
+                  "name": "Ethereum",
+                  "trackingEnabled": false,
+                  "createdAt": "2026-10-07T10:00:00.000Z",
+                  "updatedAt": "2026-10-07T10:00:00.000Z",
+                  "lastPriceReceivedAt": "2026-10-07T10:00:00.000Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/CoinNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        },
+        "tags": [
+          "Cryptocurrencies"
+        ]
+      },
+      "delete": {
+        "operationId": "deleteCryptocurrency",
+        "summary": "Delete a coin and all its history by UCID",
+        "description": "Selects the tracked coin by cmcId (UCID) for a physical, atomic cascading delete from SQLite. Does not call CoinMarketCap. Query parameters are not supported.",
+        "responses": {
+          "204": {
+            "description": "Coin and its history deleted; empty response body"
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/CoinNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        },
+        "tags": [
+          "Cryptocurrencies"
+        ]
+      }
+    },
+    "/api/v1/cryptocurrencies/{cmcId}/price/refresh": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/CmcId"
+        }
+      ],
+      "post": {
+        "operationId": "refreshPrice",
+        "summary": "Fetch and save a new USD quote",
+        "description": "Looks up the tracked UCID in SQLite before calling CoinMarketCap. Manual refresh is allowed while trackingEnabled is false. Saves a new snapshot and updates coin timestamps in one transaction, even when the provider price/source timestamp repeats. Returns the saved price, never an older price as a fallback on error. No query parameters. No body or an empty JSON object is accepted. A record deleted during the request is not recreated and a replacement record does not receive the old request's quote. During the shared quota pause, returns 503 without calling the provider or saving a snapshot.",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "additionalProperties": false,
+                "maxProperties": 0
+              },
+              "example": {}
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New snapshot saved with coin timestamps",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Price"
+                },
+                "example": {
+                  "cmcId": 1027,
+                  "symbol": "ETH",
+                  "price": 2500,
+                  "currency": "USD",
+                  "receivedAt": "2026-10-07T10:00:00.000Z",
+                  "sourceUpdatedAt": "2026-10-07T09:59:00.000Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "UCID is not tracked or was deleted (CRYPTOCURRENCY_NOT_FOUND), or CMC returned no quote (CMC_COIN_NOT_FOUND); no new snapshot saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "coin": {
+                    "value": {
+                      "error": {
+                        "code": "CRYPTOCURRENCY_NOT_FOUND",
+                        "message": "Cryptocurrency was not found."
+                      }
+                    }
+                  },
+                  "provider": {
+                    "value": {
+                      "error": {
+                        "code": "CMC_COIN_NOT_FOUND",
+                        "message": "CoinMarketCap did not return the requested cryptocurrency."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "502": {
+            "description": "Provider/network failure, invalid response or quote, or rejected provider credentials; no new snapshot saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "CMC_NETWORK_ERROR",
+                    "message": "CoinMarketCap could not be reached."
+                  }
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "CoinMarketCap quota/rate limit or shared cooldown (CMC_RATE_LIMITED); no data saved. During shutdown, an already open connection can instead return SERVER_STOPPING with Connection: close.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "quota": {
+                    "value": {
+                      "error": {
+                        "code": "CMC_RATE_LIMITED",
+                        "message": "CoinMarketCap request quota or rate limit was reached."
+                      }
+                    }
+                  },
+                  "stopping": {
+                    "value": {
+                      "error": {
+                        "code": "SERVER_STOPPING",
+                        "message": "Server is stopping."
+                      }
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Connection": {
+                "description": "Present only for SERVER_STOPPING.",
+                "schema": {
+                  "type": "string",
+                  "example": "close"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "CoinMarketCap timed out (CMC_TIMEOUT); no new snapshot saved",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "example": {
+                  "error": {
+                    "code": "CMC_TIMEOUT",
+                    "message": "CoinMarketCap request timed out."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "tags": [
+          "Prices"
+        ]
+      }
+    },
+    "/api/v1/cryptocurrencies/{cmcId}/price": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/CmcId"
+        }
+      ],
+      "get": {
+        "operationId": "getSavedPrice",
+        "summary": "Read the latest saved USD price",
+        "description": "Reads only SQLite, ordered by receivedAt descending then snapshot ID descending. Does not call CoinMarketCap, add snapshots or change any timestamps. Works while paused or CoinMarketCap is unavailable; timestamps describe the stored quote's age. No query parameters.",
+        "responses": {
+          "200": {
+            "description": "Latest saved price with original timestamps",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Price"
+                },
+                "example": {
+                  "cmcId": 1027,
+                  "symbol": "ETH",
+                  "price": 2500,
+                  "currency": "USD",
+                  "receivedAt": "2026-10-07T10:00:00.000Z",
+                  "sourceUpdatedAt": "2026-10-07T09:59:00.000Z"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "description": "UCID is not tracked (CRYPTOCURRENCY_NOT_FOUND) or has no saved snapshot (PRICE_NOT_FOUND)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                },
+                "examples": {
+                  "coin": {
+                    "value": {
+                      "error": {
+                        "code": "CRYPTOCURRENCY_NOT_FOUND",
+                        "message": "Cryptocurrency was not found."
+                      }
+                    }
+                  },
+                  "snapshot": {
+                    "value": {
+                      "error": {
+                        "code": "PRICE_NOT_FOUND",
+                        "message": "No saved price was found."
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        },
+        "tags": [
+          "Prices"
+        ]
+      }
+    },
+    "/api/v1/cryptocurrencies/{cmcId}/history": {
+      "parameters": [
+        {
+          "$ref": "#/components/parameters/CmcId"
+        }
+      ],
+      "get": {
+        "operationId": "getPriceHistory",
+        "summary": "Read accumulated USD price history",
+        "description": "Reads only SQLite without provider requests or writes. from/to filter server receivedAt inclusively, after timezone normalization to UTC; from must be <= to. Only from, to, limit and offset are accepted, once each. Sorted by receivedAt DESC, snapshot ID DESC for ties. Pagination.total counts the filtered history, not only this page. An empty history or unmatched range for a tracked coin returns 200 with items: [].",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/From"
+          },
+          {
+            "$ref": "#/components/parameters/To"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Offset"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Filtered page of saved snapshots",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PricePage"
+                },
+                "example": {
+                  "items": [
+                    {
+                      "cmcId": 1027,
+                      "symbol": "ETH",
+                      "price": 2500,
+                      "currency": "USD",
+                      "receivedAt": "2026-10-07T10:00:00.000Z",
+                      "sourceUpdatedAt": "2026-10-07T09:59:00.000Z"
+                    }
+                  ],
+                  "pagination": {
+                    "limit": 50,
+                    "offset": 0,
+                    "total": 1
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/CoinNotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/InternalError"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        },
+        "tags": [
+          "Prices"
+        ]
+      }
+    },
+    "/openapi.json": {
+      "get": {
+        "operationId": "getOpenapi",
+        "summary": "Public OpenAPI specification",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "OpenAPI 3.0 document without secrets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        },
+        "tags": [
+          "Documentation"
+        ]
+      },
+      "head": {
+        "operationId": "headOpenapi",
+        "summary": "Read public documentation headers without a response body",
+        "tags": [
+          "Documentation"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Same headers as GET; empty body"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        }
+      }
+    },
+    "/docs/": {
+      "get": {
+        "operationId": "getSwaggerUi",
+        "summary": "Public Swagger UI",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Swagger UI HTML; use Authorize with your service key",
+            "content": {
+              "text/html": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "405": {
+            "$ref": "#/components/responses/MethodNotAllowed"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        },
+        "tags": [
+          "Documentation"
+        ]
+      },
+      "head": {
+        "operationId": "headSwaggerUi",
+        "summary": "Read public documentation headers without a response body",
+        "tags": [
+          "Documentation"
+        ],
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Same headers as GET; empty body"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServerStopping"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "serviceBearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "The separate SERVICE_API_KEY; never use CMC_API_KEY here."
+      }
+    },
+    "parameters": {
+      "CmcId": {
+        "name": "cmcId",
+        "in": "path",
+        "required": true,
+        "description": "Numeric CoinMarketCap ID (UCID) of the tracked asset, in decimal notation without leading zeroes; use the cmcId response field. Examples: 1 = Bitcoin, 1027 = Ethereum.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991,
+          "example": 1027
+        }
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 50
+        },
+        "description": "Supply once as a decimal integer from 1 to 100. Unknown query fields are rejected."
+      },
+      "Offset": {
+        "name": "offset",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991,
+          "default": 0
+        },
+        "description": "Supply once as a non-negative safe decimal integer. Defaults to 0."
+      },
+      "From": {
+        "name": "from",
+        "in": "query",
+        "description": "Inclusive lower bound on server receivedAt. Valid ISO 8601 calendar date/time with seconds and timezone Z or ±HH:MM; optional 1–3 fractional digits. Normalized to UTC. URL-encode + in timezone offsets.",
+        "schema": {
+          "type": "string",
+          "format": "date-time",
+          "example": "2026-10-07T10:00:00.000Z"
+        }
+      },
+      "To": {
+        "name": "to",
+        "in": "query",
+        "description": "Inclusive upper bound on server receivedAt, using the same strict format as from; from must be <= to after UTC normalization.",
+        "schema": {
+          "type": "string",
+          "format": "date-time",
+          "example": "2026-10-08T10:00:00.000Z"
+        }
+      }
+    },
+    "schemas": {
+      "CreateCryptocurrency": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cmcId"
+        ],
+        "properties": {
+          "cmcId": {
+            "type": "integer",
+            "description": "Numeric CoinMarketCap ID (UCID)",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "example": {
+          "cmcId": 1027
+        }
+      },
+      "PatchCryptocurrency": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "trackingEnabled"
+        ],
+        "properties": {
+          "trackingEnabled": {
+            "type": "boolean"
+          }
+        },
+        "example": {
+          "trackingEnabled": false
+        }
+      },
+      "Cryptocurrency": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "cmcId",
+          "symbol",
+          "name",
+          "trackingEnabled",
+          "createdAt",
+          "updatedAt",
+          "lastPriceReceivedAt"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "description": "Technical SQLite record ID, retained in responses; use cmcId for API paths.",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "example": 1
+          },
+          "cmcId": {
+            "type": "integer",
+            "description": "Numeric CoinMarketCap ID (UCID), used in API paths",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "example": 1027
+          },
+          "symbol": {
+            "type": "string",
+            "minLength": 1,
+            "example": "ETH"
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "example": "Ethereum"
+          },
+          "trackingEnabled": {
+            "type": "boolean",
+            "example": true
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-07T10:00:00.000Z"
+          },
+          "updatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "example": "2026-10-07T10:00:00.000Z"
+          },
+          "lastPriceReceivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "example": "2026-10-07T10:00:00.000Z"
+          }
+        },
+        "example": {
+          "id": 1,
+          "cmcId": 1027,
+          "symbol": "ETH",
+          "name": "Ethereum",
+          "trackingEnabled": true,
+          "createdAt": "2026-10-07T10:00:00.000Z",
+          "updatedAt": "2026-10-07T10:00:00.000Z",
+          "lastPriceReceivedAt": "2026-10-07T10:00:00.000Z"
+        }
+      },
+      "CryptocurrencyPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Cryptocurrency"
+            }
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "limit",
+              "offset",
+              "total"
+            ],
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "example": {
+          "items": [
+            {
+              "id": 1,
+              "cmcId": 1027,
+              "symbol": "ETH",
+              "name": "Ethereum",
+              "trackingEnabled": true,
+              "createdAt": "2026-10-07T10:00:00.000Z",
+              "updatedAt": "2026-10-07T10:00:00.000Z",
+              "lastPriceReceivedAt": "2026-10-07T10:00:00.000Z"
+            }
+          ],
+          "pagination": {
+            "limit": 50,
+            "offset": 0,
+            "total": 1
+          }
+        }
+      },
+      "Price": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "cmcId",
+          "symbol",
+          "price",
+          "currency",
+          "receivedAt",
+          "sourceUpdatedAt"
+        ],
+        "properties": {
+          "cmcId": {
+            "type": "integer",
+            "description": "CoinMarketCap UCID used in API paths",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "example": 1027
+          },
+          "symbol": {
+            "type": "string",
+            "minLength": 1,
+            "example": "ETH"
+          },
+          "price": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Finite non-negative USD quote, stored as SQLite REAL / JS number",
+            "example": 2500
+          },
+          "currency": {
+            "type": "string",
+            "enum": [
+              "USD"
+            ]
+          },
+          "receivedAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "Original server receipt time, UTC ISO 8601 with milliseconds",
+            "example": "2026-10-07T10:00:00.000Z"
+          },
+          "sourceUpdatedAt": {
+            "type": "string",
+            "format": "date-time",
+            "nullable": true,
+            "description": "Stored provider quote time in UTC; null if unavailable in a saved snapshot",
+            "example": "2026-10-07T09:59:00.000Z"
+          }
+        },
+        "example": {
+          "cmcId": 1027,
+          "symbol": "ETH",
+          "price": 2500,
+          "currency": "USD",
+          "receivedAt": "2026-10-07T10:00:00.000Z",
+          "sourceUpdatedAt": "2026-10-07T09:59:00.000Z"
+        }
+      },
+      "PricePage": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "items",
+          "pagination"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Price"
+            }
+          },
+          "pagination": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "limit",
+              "offset",
+              "total"
+            ],
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 100
+              },
+              "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 9007199254740991
+              },
+              "total": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        },
+        "example": {
+          "items": [
+            {
+              "cmcId": 1027,
+              "symbol": "ETH",
+              "price": 2500,
+              "currency": "USD",
+              "receivedAt": "2026-10-07T10:00:00.000Z",
+              "sourceUpdatedAt": "2026-10-07T09:59:00.000Z"
+            }
+          ],
+          "pagination": {
+            "limit": 50,
+            "offset": 0,
+            "total": 1
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "code",
+              "message"
+            ],
+            "properties": {
+              "code": {
+                "type": "string",
+                "example": "INVALID_REQUEST"
+              },
+              "message": {
+                "type": "string",
+                "example": "cmcId must be a positive safe integer."
+              }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "BadRequest": {
+        "description": "Invalid body, JSON, ID or query; JSON body limit 16 KiB (INVALID_REQUEST or INVALID_JSON)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "INVALID_REQUEST",
+                "message": "cmcId must be a positive safe integer."
+              }
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "Missing, malformed or incorrect service Bearer token (UNAUTHORIZED)",
+        "headers": {
+          "WWW-Authenticate": {
+            "schema": {
+              "type": "string",
+              "example": "Bearer"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "UNAUTHORIZED",
+                "message": "A valid Bearer token is required."
+              }
+            }
+          }
+        }
+      },
+      "CoinNotFound": {
+        "description": "The requested cmcId (UCID) is not tracked in SQLite (CRYPTOCURRENCY_NOT_FOUND)",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "CRYPTOCURRENCY_NOT_FOUND",
+                "message": "Cryptocurrency was not found."
+              }
+            }
+          }
+        }
+      },
+      "InternalError": {
+        "description": "Unexpected internal failure (INTERNAL_ERROR), without SQL, keys or stack traces",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "INTERNAL_ERROR",
+                "message": "An unexpected internal error occurred."
+              }
+            }
+          }
+        }
+      },
+      "MethodNotAllowed": {
+        "description": "Unsupported method for public documentation (METHOD_NOT_ALLOWED)",
+        "headers": {
+          "Allow": {
+            "schema": {
+              "type": "string",
+              "example": "GET, HEAD"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "METHOD_NOT_ALLOWED",
+                "message": "This resource supports GET and HEAD."
+              }
+            }
+          }
+        }
+      },
+      "ServerStopping": {
+        "description": "An already open connection received a request during shutdown (SERVER_STOPPING). New connections are no longer accepted.",
+        "headers": {
+          "Connection": {
+            "schema": {
+              "type": "string",
+              "example": "close"
+            }
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            },
+            "example": {
+              "error": {
+                "code": "SERVER_STOPPING",
+                "message": "Server is stopping."
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "Cryptocurrencies",
+      "description": "Create, read, pause/resume and delete tracked assets by UCID."
+    },
+    {
+      "name": "Prices",
+      "description": "Manual USD refresh and SQLite reads of saved prices and accumulated history."
+    },
+    {
+      "name": "Documentation",
+      "description": "Public OpenAPI and Swagger UI, without service or provider secrets."
+    }
+  ]
+}

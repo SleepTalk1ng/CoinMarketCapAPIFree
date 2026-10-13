@@ -1,0 +1,26 @@
+# Allow only build inputs. Secrets, SQLite and local artifacts never enter the context.
+**
+!Dockerfile
+!package.json
+!package-lock.json
+!tsconfig.json
+!src/
+!src/**
+!migrations/
+!migrations/**
+!docs/
+!docs/openapi.json
+!scripts/
+!scripts/copy-migrations.cjs
+!local-view/
+!local-view/**
+# Also exclude secrets/data accidentally placed under an allowed directory.
+**/.env
+**/.env.*
+**/*.sqlite
+**/*.sqlite-*
+**/*.sqlite3
+**/*.sqlite3-*
+**/*.db
+**/*.db-*
+**/node_modules/
